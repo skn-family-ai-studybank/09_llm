@@ -54,7 +54,7 @@ EMBEDDING_MODEL_NAME = os.getenv(
     "text-embedding-3-small").strip() or "text-embedding-3-small"
 
 # Vector DB의 차원 수
-EMBEDDING_DIMENSION = 1536
+EMBEDDING_DIMENSIONS = 1536
 
 # 파인콘 인덱스 이름
 PINECONE_INDEX_NAME = os.getenv(
@@ -222,3 +222,100 @@ def describe_dish_flavor(payload: dict[str, Any]) -> Runnable:
 
     # prompt -> LLM -> parser chain 구성
     return prompt | _create_chat_model() | StrOutputParser()
+
+
+def search_wines(dish_flavor: str) -> dict[str, str]:
+    """영어 풍미 query로 Pinecone을 검색하고 Generation 입력 dict를 반환한다."""
+
+    if not dish_flavor.strip():
+        raise ValueError("검색에 사용할 음식 풍미 query가 비어 있다.")
+
+    # 임베딩 모델 생성
+    # -> 풍미 query를 Pinecone Vector Store에서 비교하기 위하여
+    #    임베딩 수행시 사용
+    embeddings = OpenAIEmbeddings(
+        model=EMBEDDING_MODEL_NAME,
+        dimensions=EMBEDDING_DIMENSIONS,
+        request_timeout=30,
+        max_retries=1,
+    )
+
+    # Pinecone Vector Store 연결
+    # - 지정된 index_name, namespace가 같은 index로 연결
+    vector_store = PineconeVectorStore(
+        index_name=PINECONE_INDEX_NAME,
+        embedding=embeddings,
+        namespace=PINECONE_NAMESPACE,
+    )
+
+    # 유사도가 높은 리뷰(Document) 5개를 찾아서 반환
+    retrieved_documents = vector_store.similarity_search(
+        query=dish_flavor,
+        k=TOP_K_REVIEWS,
+    )
+
+    if not retrieved_documents:
+        raise RuntimeError(
+            "검색된 와인 리뷰가 없다. index 이름과 namespace 적재 상태를 확인한다."
+        )
+
+    # 와인 리뷰 5개(list[document])를 하나의 str로 합치기
+    wine_reviews = "\n\n".join(
+        f"[review {rank}]\n{document.page_content}"
+        for rank, document in enumerate(retrieved_documents, start=1)
+    )
+
+    # 최종 답변 생성 LLM(== Generation)에 전달할 dict(==query) 반환
+    return {
+        "dish_flavor": dish_flavor,
+        "wine_reviews": wine_reviews,
+    }
+
+
+def recommend_wines(payload: dict[str, str]) -> Runnable:
+    """풍미와 검색 리뷰를 받아 한국어 추천을 생성할 Runnable을 반환한다."""
+
+    dish_flavor = payload.get("dish_flavor", "").strip()
+    wine_reviews = payload.get("wine_reviews", "").strip()
+    if not dish_flavor or not wine_reviews:
+        raise ValueError("요리 풍미와 검색된 와인 리뷰가 모두 필요하다.")
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", WINE_RECOMMENDATION_SYSTEM_PROMPT),
+            ("human", WINE_RECOMMENDATION_HUMAN_PROMPT),
+        ]
+    )
+
+    # dict -> PromptValue -> AIMessage
+    # -> str(한국어 와인 추천 글)
+    return prompt | _create_chat_model() | StrOutputParser()
+
+
+def build_ai_sommelier_chain() -> Runnable:
+    """이미지 분석·검색·추천 단계를 하나의 LCEL Chain으로 연결한다."""
+    validate_runtime_settings()
+
+    describe_dish_flavor_chain = RunnableLambda(describe_dish_flavor)
+    search_wines_chain = RunnableLambda(search_wines)
+    recommend_wines_chain = RunnableLambda(recommend_wines)
+
+    # 자료형은 dict → str → dict → str 순서로 변한다.
+    return (
+        describe_dish_flavor_chain
+        | search_wines_chain
+        | recommend_wines_chain
+    )
+
+
+def ai_sommelier_rag(*image_urls: str) -> Iterator[str]:
+    """이미지 URL을 Chain에 전달하고 최종 추천을 문자열 chunk로 반환한다."""
+
+    if not image_urls:
+        raise ValueError("하나 이상의 이미지 URL이 필요하다.")
+
+    chain = build_ai_sommelier_chain()
+
+    # stream()은 완성된 추천을 한 번에 기다리지 않고 생성되는 문자열 chunk를 반환한다.
+    # app.py의 st.write_stream()이 이 iterator를 소비해 화면에 순서대로 표시한다.
+    return chain.stream({"image_urls": list(image_urls)})
