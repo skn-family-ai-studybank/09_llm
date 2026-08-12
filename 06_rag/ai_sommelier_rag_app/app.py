@@ -59,3 +59,41 @@ with st.form(key="image_url_form", clear_on_submit=False):
         type="primary"
     )
 
+
+# submitted 버튼이 클릭되면 True, 아니면 False
+if submitted:
+    try:
+        # 입력된 이미지 URL이 문제가 없는지 검증
+        image_url = validate_public_image_url(image_url_input or "")
+
+    except ValueError as error:
+        st.warning(str(error))
+
+    else: # image_url이 검증을 통과한 경우
+        st.image(
+            image_url,
+            caption="와인 페어링을 요청한 음식 이미지",
+            width='stretch'
+        )
+
+        st.subheader("AI 소믈리에 - 와인 추천")
+        try:
+            with st.spinner("음식과 관련된 와인 리뷰를 분석 중입니다..."):
+                st.write_stream(ai_sommelier_rag(image_url))
+
+        # 설정 오류
+        except SommelierConfigurationError as error:
+            st.error(str(error))
+
+        # 나머지 오류
+        except Exception as error:
+            logger.exception("[AI Sommelier Rag 실행 실패]")
+            st.error(
+                "추천 기능 수행 중 오류 발생."
+                f'오류 타입: {type(error).__name__}'
+            )
+            st.caption(
+                "API KEY 확인,"
+                "모델 접근 권한 확인,"
+                "Pinecone 인덱스, 차원수, namespace 확인"
+            )
