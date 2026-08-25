@@ -1,5 +1,7 @@
 """두 수를 더하는 Tool을 제공하는 MCP Server"""
 
+# python MCP SDK - V1: FastMCP
+# python MCP SDK - V2: MCPServer
 from mcp.server import MCPServer
 
 # "math_tools"라는 이름을 갖는 MCPServer 인스턴스를 생성
